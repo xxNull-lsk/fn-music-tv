@@ -264,6 +264,7 @@ internal fun ImmersivePlayer(
     val favoritePending = playback.mediaId in favoriteLibraryState.pending
     var controlsVisible by remember { mutableStateOf(true) }
     var queueVisible by remember { mutableStateOf(false) }
+    var detailsVisible by remember { mutableStateOf(false) }
     var consumeBackKeyUp by remember { mutableStateOf(false) }
     var consumeCenterKeyUp by remember { mutableStateOf(false) }
     var interactionEpoch by remember { mutableStateOf(0) }
@@ -275,6 +276,7 @@ internal fun ImmersivePlayer(
     val modeFocus = remember { FocusRequester() }
     val favoriteFocus = remember { FocusRequester() }
     val queueFocus = remember { FocusRequester() }
+    val detailsFocus = remember { FocusRequester() }
     val exitRoamFocus = remember { FocusRequester() }
     val statusRetryFocus = remember { FocusRequester() }
     val context = LocalContext.current
@@ -287,6 +289,7 @@ internal fun ImmersivePlayer(
     }
     fun dismissPlayerChrome() {
         queueVisible = false
+        detailsVisible = false
         controlsVisible = false
         playerFocus.requestFocus()
     }
@@ -318,18 +321,27 @@ internal fun ImmersivePlayer(
         canRetryPresentation = presentation.canRetry,
         playbackError = playback.error?.displayName,
     )?.retry != null
-    LaunchedEffect(interactionEpoch, controlsVisible, queueVisible) {
-        if (controlsVisible && !queueVisible) {
+    LaunchedEffect(interactionEpoch, controlsVisible, queueVisible, detailsVisible) {
+        if (controlsVisible && !queueVisible && !detailsVisible) {
             delay(5_000)
             controlsVisible = false
         }
     }
-    LaunchedEffect(controlsVisible, queueVisible) {
+    var wasDetailsVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(controlsVisible, queueVisible, detailsVisible) {
         when {
-            queueVisible -> Unit
-            controlsVisible -> playFocus.requestFocus()
+            queueVisible || detailsVisible -> Unit
+            controlsVisible -> {
+                if (wasDetailsVisible) {
+                    yield()
+                    runCatching { detailsFocus.requestFocus() }
+                } else {
+                    playFocus.requestFocus()
+                }
+            }
             else -> playerFocus.requestFocus()
         }
+        wasDetailsVisible = detailsVisible
     }
     LaunchedEffect(roaming) {
         if (!roaming && controlsVisible) playFocus.requestFocus()
@@ -342,7 +354,7 @@ internal fun ImmersivePlayer(
             runCatching { queueFocus.requestFocus() }
         }
     }
-    BackHandler(queueVisible || controlsVisible) {
+    BackHandler(queueVisible || controlsVisible || detailsVisible) {
         dismissPlayerChrome()
     }
     Box(
@@ -350,7 +362,7 @@ internal fun ImmersivePlayer(
             .background(FnColors.Background)
             .focusRequester(playerFocus)
             .dismissPlayerChromeOnBack(
-                chromeVisible = controlsVisible || queueVisible,
+                chromeVisible = controlsVisible || queueVisible || detailsVisible,
                 consumeBackKeyUp = consumeBackKeyUp,
                 setConsumeBackKeyUp = { consumeBackKeyUp = it },
                 onDismiss = ::dismissPlayerChrome,
@@ -366,8 +378,8 @@ internal fun ImmersivePlayer(
                 onNext = container.playbackController::next,
                 onReveal = ::revealControls,
             )
-            .pointerInput(controlsVisible, queueVisible) {
-                if (!controlsVisible && !queueVisible) {
+            .pointerInput(controlsVisible, queueVisible, detailsVisible) {
+                if (!controlsVisible && !queueVisible && !detailsVisible) {
                     detectTapGestures { revealControls() }
                 }
             }
@@ -408,7 +420,7 @@ internal fun ImmersivePlayer(
             statusRetryReturnFocus = progressFocus,
             onStatusInteraction = ::revealControls,
         )
-        if (controlsVisible && !queueVisible) {
+        if (controlsVisible && !queueVisible && !detailsVisible) {
             PlaybackProgressValues(playbackProgress) { positionMs, durationMs ->
                 PlayerControlOverlay(
                     positionMs = positionMs,
@@ -424,6 +436,7 @@ internal fun ImmersivePlayer(
                     favoriteFocus = favoriteFocus,
                     modeFocus = modeFocus,
                     queueFocus = queueFocus,
+                    detailsFocus = detailsFocus,
                     exitRoamFocus = exitRoamFocus,
                     statusRetryFocus = statusRetryFocus,
                     statusRetryAvailable = statusRetryAvailable,
@@ -463,6 +476,7 @@ internal fun ImmersivePlayer(
                             queueVisible = true
                         }
                     },
+                    onOpenDetails = { detailsVisible = true },
                     onExitRoam = onExitRoam,
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
@@ -478,6 +492,21 @@ internal fun ImmersivePlayer(
                 onSelect = container.playbackController::selectQueueItem,
                 onRemove = container.playbackController::removeQueueItem,
                 onInteraction = ::revealControls,
+            )
+        }
+        if (detailsVisible) {
+            SongDetailsOverlay(
+                title = title,
+                artist = artist,
+                album = metadata?.albumName ?: playback.nowPlayingIdentity?.album,
+                audioFormat = audioFormat,
+                durationMs = metadata?.durationMs ?: playback.durationMs.takeIf { it > 0L },
+                songId = playback.mediaId,
+                onInteraction = ::revealControls,
+                onDismiss = {
+                    detailsVisible = false
+                    revealControls()
+                },
             )
         }
     }
@@ -1380,6 +1409,93 @@ internal fun PlaybackQueueOverlay(
 }
 
 @Composable
+internal fun SongDetailsOverlay(
+    title: String,
+    artist: String,
+    album: String?,
+    audioFormat: String,
+    durationMs: Long?,
+    songId: String,
+    onInteraction: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val closeFocus = remember { FocusRequester() }
+    LaunchedEffect(closeFocus) {
+        yield()
+        runCatching { closeFocus.requestFocus() }
+    }
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.34f))) {
+        Column(
+            Modifier.align(Alignment.Center)
+                .width(430.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xF3121717))
+                .padding(horizontal = 28.dp, vertical = 24.dp),
+        ) {
+            Text("歌曲详情", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(16.dp))
+            SongDetailsRow("歌曲", title.ifBlank { "未知歌曲" })
+            SongDetailsRow("演唱者", artist.ifBlank { "未知演唱者" })
+            SongDetailsRow("专辑", album.orEmpty().ifBlank { "未知专辑" })
+            SongDetailsRow("时长", durationMs?.takeIf { it > 0L }?.let(::formatDuration) ?: "未知")
+            if (audioFormat.isNotBlank()) {
+                SongDetailsRow("音频格式", audioFormat)
+            }
+            SongDetailsRow("歌曲 ID", songId.ifBlank { "未知" })
+            Spacer(Modifier.height(20.dp))
+            TvMaterialButton(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth().height(42.dp)
+                    .focusProperties {
+                        up = FocusRequester.Cancel
+                        down = FocusRequester.Cancel
+                        left = FocusRequester.Cancel
+                        right = FocusRequester.Cancel
+                    }
+                    .focusRequester(closeFocus)
+                    .onFocusChanged { if (it.isFocused) onInteraction() }
+                    .semantics { contentDescription = "关闭歌曲详情" },
+                scale = ButtonDefaults.scale(focusedScale = 1.02f),
+                colors = ButtonDefaults.colors(
+                    containerColor = Color.White.copy(alpha = 0.07f),
+                    contentColor = FnColors.Text,
+                    focusedContainerColor = FnColors.Coral,
+                    focusedContentColor = FnColors.Background,
+                    pressedContainerColor = FnColors.Coral,
+                    pressedContentColor = FnColors.Background,
+                ),
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("关闭", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SongDetailsRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+        Text(
+            label,
+            color = FnColors.Muted,
+            fontSize = 14.sp,
+            lineHeight = 18.sp,
+            modifier = Modifier.width(90.dp),
+        )
+        Text(
+            value,
+            fontSize = 15.sp,
+            lineHeight = 19.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
 private fun QueueDeleteIcon() {
     val color = LocalContentColor.current
     Canvas(Modifier.size(14.dp)) {
@@ -1416,6 +1532,7 @@ internal fun PlayerControlOverlay(
     favoriteFocus: FocusRequester,
     modeFocus: FocusRequester,
     queueFocus: FocusRequester,
+    detailsFocus: FocusRequester,
     exitRoamFocus: FocusRequester,
     statusRetryFocus: FocusRequester,
     statusRetryAvailable: Boolean,
@@ -1431,6 +1548,7 @@ internal fun PlayerControlOverlay(
     onToggleFavorite: () -> Unit,
     onCyclePlayMode: () -> Unit,
     onOpenQueue: () -> Unit,
+    onOpenDetails: () -> Unit,
     onExitRoam: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1522,11 +1640,7 @@ internal fun PlayerControlOverlay(
                     description = if (favorite) "取消收藏当前歌曲" else "收藏当前歌曲",
                     focusRequester = favoriteFocus,
                     upFocus = progressFocus,
-                    rightFocus = when {
-                        !roaming -> modeFocus
-                        previousEnabled -> previousFocus
-                        else -> playFocus
-                    },
+                    rightFocus = if (!roaming) modeFocus else detailsFocus,
                     selected = favorite,
                     onFocus = onInteraction,
                     onClick = {
@@ -1541,7 +1655,7 @@ internal fun PlayerControlOverlay(
                         focusRequester = modeFocus,
                         upFocus = progressFocus,
                         leftFocus = favoriteFocus,
-                        rightFocus = if (previousEnabled) previousFocus else playFocus,
+                        rightFocus = detailsFocus,
                         onFocus = onInteraction,
                         onClick = {
                             onInteraction()
@@ -1549,6 +1663,19 @@ internal fun PlayerControlOverlay(
                         },
                     )
                 }
+                PlayerSideActionButton(
+                    glyph = PlayerSideActionGlyph.Info,
+                    description = "歌曲详情",
+                    focusRequester = detailsFocus,
+                    upFocus = progressFocus,
+                    leftFocus = if (!roaming) modeFocus else favoriteFocus,
+                    rightFocus = if (previousEnabled) previousFocus else playFocus,
+                    onFocus = onInteraction,
+                    onClick = {
+                        onInteraction()
+                        onOpenDetails()
+                    },
+                )
             }
             Row(
                 Modifier.align(Alignment.Center),
@@ -1711,6 +1838,7 @@ private enum class PlayerSideActionGlyph {
     RepeatOne,
     Sequence,
     Queue,
+    Info,
 }
 
 private fun playModeGlyph(mode: PlayMode): PlayerSideActionGlyph = when (mode) {
@@ -1794,6 +1922,16 @@ private fun PlayerSideActionIcon(glyph: PlayerSideActionGlyph) {
                     close()
                 }
                 drawPath(play, iconColor)
+            }
+            PlayerSideActionGlyph.Info -> {
+                drawCircle(
+                    color = iconColor,
+                    radius = size.width * 0.34f,
+                    center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f),
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
+                )
+                line(0.50f, 0.27f, 0.50f, 0.32f)
+                line(0.50f, 0.45f, 0.50f, 0.72f)
             }
         }
     }

@@ -846,6 +846,7 @@ private fun PlayerControlHarness(
     val favoriteFocus = remember { FocusRequester() }
     val modeFocus = remember { FocusRequester() }
     val queueFocus = remember { FocusRequester() }
+    val detailsFocus = remember { FocusRequester() }
     val exitRoamFocus = remember { FocusRequester() }
     val statusRetryFocus = remember { FocusRequester() }
     var playMode by remember { mutableStateOf(PlayMode.ListRepeat) }
@@ -872,6 +873,7 @@ private fun PlayerControlHarness(
             favoriteFocus = favoriteFocus,
             modeFocus = modeFocus,
             queueFocus = queueFocus,
+            detailsFocus = detailsFocus,
             exitRoamFocus = exitRoamFocus,
             statusRetryFocus = statusRetryFocus,
             statusRetryAvailable = false,
@@ -890,6 +892,7 @@ private fun PlayerControlHarness(
                 onCycleMode()
             },
             onOpenQueue = {},
+            onOpenDetails = {},
             onExitRoam = onExitRoam,
             modifier = Modifier.align(Alignment.BottomCenter),
         )
@@ -908,6 +911,7 @@ private fun PlayerRetryHarness(
     val favoriteFocus = remember { FocusRequester() }
     val modeFocus = remember { FocusRequester() }
     val queueFocus = remember { FocusRequester() }
+    val detailsFocus = remember { FocusRequester() }
     val exitRoamFocus = remember { FocusRequester() }
     val retryFocus = remember { FocusRequester() }
     var retryVisible by remember { mutableStateOf(true) }
@@ -941,6 +945,7 @@ private fun PlayerRetryHarness(
             favoriteFocus = favoriteFocus,
             modeFocus = modeFocus,
             queueFocus = queueFocus,
+            detailsFocus = detailsFocus,
             exitRoamFocus = exitRoamFocus,
             statusRetryFocus = retryFocus,
             statusRetryAvailable = true,
@@ -956,6 +961,7 @@ private fun PlayerRetryHarness(
             onToggleFavorite = {},
             onCyclePlayMode = {},
             onOpenQueue = {},
+            onOpenDetails = {},
             onExitRoam = {},
             modifier = Modifier.align(Alignment.BottomCenter),
         )
