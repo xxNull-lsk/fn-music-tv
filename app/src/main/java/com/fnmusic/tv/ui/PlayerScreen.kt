@@ -319,15 +319,15 @@ internal fun ImmersivePlayer(
         canRetryQueue = playback.canRetryQueue,
         presentationError = presentation.retryableFailure,
         canRetryPresentation = presentation.canRetry,
-        playbackError = playback.error?.displayName,
+        playbackError = playback.error?.displayText,
     )?.retry != null
+    var wasDetailsVisible by remember { mutableStateOf(false) }
     LaunchedEffect(interactionEpoch, controlsVisible, queueVisible, detailsVisible) {
         if (controlsVisible && !queueVisible && !detailsVisible) {
             delay(5_000)
             controlsVisible = false
         }
     }
-    var wasDetailsVisible by remember { mutableStateOf(false) }
     LaunchedEffect(controlsVisible, queueVisible, detailsVisible) {
         when {
             queueVisible || detailsVisible -> Unit
@@ -406,7 +406,7 @@ internal fun ImmersivePlayer(
             staticLyric = staticLyric,
             lyricsLoading = lyricsLoading,
             lyricsFailed = lyricsFailed,
-            playbackError = playback.error?.displayName,
+            playbackError = playback.error?.displayText,
             queueError = playback.queueError,
             canRetryQueue = playback.canRetryQueue,
             onRetryQueue = container.playbackController::retryQueuePage,

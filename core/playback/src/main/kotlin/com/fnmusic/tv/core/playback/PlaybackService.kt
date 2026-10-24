@@ -23,6 +23,7 @@ import java.util.ArrayList
 
 internal const val FORWARD_BUFFER_DURATION_MS = 50_000
 internal const val BACK_BUFFER_DURATION_MS = 15_000
+internal const val PLAYBACK_USER_AGENT = "FnMusicTV/0.1"
 private const val LEGACY_AUDIO_CACHE_DIRECTORY = "media"
 private const val TAG = "PlaybackService"
 
@@ -64,7 +65,7 @@ internal fun createPlaybackRenderersFactory(context: Context): DefaultRenderersF
 internal fun createPlaybackHttpDataSourceFactory(): DefaultHttpDataSource.Factory =
     DefaultHttpDataSource.Factory()
         .setAllowCrossProtocolRedirects(false)
-        .setUserAgent("FnMusicTV/0.1")
+        .setUserAgent(PLAYBACK_USER_AGENT)
 
 internal fun playbackRequestHeaders(token: String, accessCode: String?, relayMode: Boolean): Map<String, String> =
     buildMap {
