@@ -359,7 +359,11 @@ internal fun ImmersivePlayer(
                 chromeVisible = controlsVisible,
                 shouldConsumeCenterKeyUp = { consumeCenterKeyUp },
                 setConsumeCenterKeyUp = { consumeCenterKeyUp = it },
+                canPrevious = previousEnabled,
+                canNext = nextEnabled,
                 onCenter = container.playbackController::playPause,
+                onPrevious = container.playbackController::previous,
+                onNext = container.playbackController::next,
                 onReveal = ::revealControls,
             )
             .pointerInput(controlsVisible, queueVisible) {
@@ -513,7 +517,11 @@ internal fun Modifier.revealPlayerChromeOnKey(
     chromeVisible: Boolean,
     shouldConsumeCenterKeyUp: () -> Boolean,
     setConsumeCenterKeyUp: (Boolean) -> Unit,
+    canPrevious: Boolean,
+    canNext: Boolean,
     onCenter: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
     onReveal: () -> Unit,
 ): Modifier = onPreviewKeyEvent { event ->
     val isCenter = event.key == Key.Enter || event.key == Key.DirectionCenter
@@ -529,10 +537,15 @@ internal fun Modifier.revealPlayerChromeOnKey(
             onReveal()
             true
         }
-        event.key == Key.DirectionLeft ||
-            event.key == Key.DirectionRight ||
-            event.key == Key.DirectionUp ||
-            event.key == Key.DirectionDown -> {
+        event.key == Key.DirectionLeft -> {
+            if (canPrevious) onPrevious() else onReveal()
+            true
+        }
+        event.key == Key.DirectionRight -> {
+            if (canNext) onNext() else onReveal()
+            true
+        }
+        event.key == Key.DirectionUp || event.key == Key.DirectionDown -> {
             onReveal()
             true
         }

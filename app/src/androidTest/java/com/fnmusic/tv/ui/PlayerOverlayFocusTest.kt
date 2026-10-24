@@ -507,6 +507,98 @@ class PlayerOverlayFocusTest {
         composeRule.runOnIdle { assertEquals(2, playPauseCalls.get()) }
     }
 
+    @Test fun leftKeyWithHiddenControlsSwitchesToPreviousTrack() {
+        val previousCalls = AtomicInteger(0)
+        composeRule.setContent {
+            FnMusicTheme {
+                PlayerRevealKeyHarness(onPrevious = { previousCalls.incrementAndGet() })
+            }
+        }
+
+        composeRule.onRoot().performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+
+        composeRule.runOnIdle { assertEquals(1, previousCalls.get()) }
+        composeRule.onNodeWithContentDescription("播放").assertDoesNotExist()
+    }
+
+    @Test fun rightKeyWithHiddenControlsSwitchesToNextTrack() {
+        val nextCalls = AtomicInteger(0)
+        composeRule.setContent {
+            FnMusicTheme {
+                PlayerRevealKeyHarness(onNext = { nextCalls.incrementAndGet() })
+            }
+        }
+
+        composeRule.onRoot().performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+
+        composeRule.runOnIdle { assertEquals(1, nextCalls.get()) }
+        composeRule.onNodeWithContentDescription("播放").assertDoesNotExist()
+    }
+
+    @Test fun upKeyWithHiddenControlsStillRevealsControls() {
+        composeRule.setContent {
+            FnMusicTheme {
+                PlayerRevealKeyHarness()
+            }
+        }
+
+        composeRule.onRoot().performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("播放").assertIsFocused()
+    }
+
+    @Test fun downKeyWithHiddenControlsStillRevealsControls() {
+        composeRule.setContent {
+            FnMusicTheme {
+                PlayerRevealKeyHarness()
+            }
+        }
+
+        composeRule.onRoot().performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("播放").assertIsFocused()
+    }
+
+    @Test fun unavailableRightWithHiddenControlsRevealsControls() {
+        val switchCalls = AtomicInteger(0)
+        composeRule.setContent {
+            FnMusicTheme {
+                PlayerRevealKeyHarness(
+                    onPrevious = { switchCalls.incrementAndGet() },
+                    onNext = { switchCalls.incrementAndGet() },
+                    canPrevious = false,
+                    canNext = false,
+                )
+            }
+        }
+
+        composeRule.onRoot().performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("播放").assertIsFocused()
+        composeRule.runOnIdle { assertEquals(0, switchCalls.get()) }
+    }
+
+    @Test fun unavailableLeftWithHiddenControlsRevealsControls() {
+        val switchCalls = AtomicInteger(0)
+        composeRule.setContent {
+            FnMusicTheme {
+                PlayerRevealKeyHarness(
+                    onPrevious = { switchCalls.incrementAndGet() },
+                    onNext = { switchCalls.incrementAndGet() },
+                    canPrevious = false,
+                    canNext = false,
+                )
+            }
+        }
+
+        composeRule.onRoot().performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("播放").assertIsFocused()
+        composeRule.runOnIdle { assertEquals(0, switchCalls.get()) }
+    }
+
     @Test fun capturePlayerAndQueueEvidence() {
         val items = List(8) { index ->
             PlaybackQueueItem(
@@ -695,7 +787,13 @@ private fun PlayerBackKeyHarness() {
 }
 
 @Composable
-private fun PlayerRevealKeyHarness(onPlayPause: () -> Unit) {
+private fun PlayerRevealKeyHarness(
+    onPlayPause: () -> Unit = {},
+    onPrevious: () -> Unit = {},
+    onNext: () -> Unit = {},
+    canPrevious: Boolean = true,
+    canNext: Boolean = true,
+) {
     var controlsVisible by remember { mutableStateOf(false) }
     var consumeCenterKeyUp by remember { mutableStateOf(false) }
     val playerFocus = remember { FocusRequester() }
@@ -709,7 +807,11 @@ private fun PlayerRevealKeyHarness(onPlayPause: () -> Unit) {
                 chromeVisible = controlsVisible,
                 shouldConsumeCenterKeyUp = { consumeCenterKeyUp },
                 setConsumeCenterKeyUp = { consumeCenterKeyUp = it },
+                canPrevious = canPrevious,
+                canNext = canNext,
                 onCenter = onPlayPause,
+                onPrevious = onPrevious,
+                onNext = onNext,
                 onReveal = { controlsVisible = true },
             )
             .focusable(),

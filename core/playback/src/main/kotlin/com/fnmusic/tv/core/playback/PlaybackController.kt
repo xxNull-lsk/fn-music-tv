@@ -467,7 +467,10 @@ class PlaybackController(
 
     fun next() {
         if (queueKind == QueueKind.Roam) advanceRoam(RoamDirection.Next)
-        else controller?.seekToNextMediaItem()
+        else controller?.let { player ->
+            if (!player.hasNextMediaItem() && player.mediaItemCount > 0) player.seekTo(0, 0L)
+            else player.seekToNextMediaItem()
+        }
     }
 
     fun previous() {
@@ -476,8 +479,12 @@ class PlaybackController(
             return
         }
         controller?.let { player ->
-            if (player.currentPosition > PREVIOUS_RESTART_THRESHOLD_MS) player.seekTo(0L)
-            else player.seekToPreviousMediaItem()
+            when {
+                player.currentPosition > PREVIOUS_RESTART_THRESHOLD_MS -> player.seekTo(0L)
+                player.hasPreviousMediaItem() -> player.seekToPreviousMediaItem()
+                player.mediaItemCount > 0 -> player.seekTo(player.mediaItemCount - 1, 0L)
+                else -> Unit
+            }
         }
     }
 
