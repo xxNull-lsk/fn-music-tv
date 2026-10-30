@@ -1640,6 +1640,7 @@ internal fun PlayerControlOverlay(
                     description = if (favorite) "取消收藏当前歌曲" else "收藏当前歌曲",
                     focusRequester = favoriteFocus,
                     upFocus = progressFocus,
+                    leftFocus = if (roaming) exitRoamFocus else queueFocus,
                     rightFocus = if (!roaming) modeFocus else detailsFocus,
                     selected = favorite,
                     onFocus = onInteraction,
@@ -1688,7 +1689,7 @@ internal fun PlayerControlOverlay(
                     enabled = previousEnabled,
                     focusRequester = previousFocus,
                     upFocus = progressFocus,
-                    leftFocus = if (roaming) favoriteFocus else modeFocus,
+                    leftFocus = if (roaming) detailsFocus else modeFocus,
                     rightFocus = playFocus,
                     onFocus = onInteraction,
                     onClick = onPrevious,
@@ -1700,7 +1701,7 @@ internal fun PlayerControlOverlay(
                     upFocus = progressFocus,
                     leftFocus = when {
                         previousEnabled -> previousFocus
-                        roaming -> favoriteFocus
+                        roaming -> detailsFocus
                         else -> modeFocus
                     },
                     rightFocus = when {
@@ -1731,6 +1732,7 @@ internal fun PlayerControlOverlay(
                 focusRequester = if (roaming) exitRoamFocus else queueFocus,
                 upFocus = progressFocus,
                 leftFocus = if (nextEnabled) nextFocus else playFocus,
+                rightFocus = favoriteFocus,
                 onFocus = onInteraction,
                 onClick = {
                     onInteraction()
