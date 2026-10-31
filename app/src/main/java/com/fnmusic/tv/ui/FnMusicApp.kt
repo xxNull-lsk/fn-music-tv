@@ -681,7 +681,7 @@ private fun VisibilityIcon(hidden: Boolean) {
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun TvTextField(
+internal fun TvTextField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
@@ -693,14 +693,25 @@ private fun TvTextField(
     downFocus: FocusRequester? = null,
     leftFocus: FocusRequester? = null,
     rightFocus: FocusRequester? = null,
+    editingSignal: Int = 0,
+    onEditingChange: (Boolean) -> Unit = {},
+    onDone: () -> Unit = {},
 ) {
     var focused by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
     var imeWasVisible by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     val imeVisible = WindowInsets.isImeVisible
+    val fieldFocus = remember { FocusRequester() }
 
+    LaunchedEffect(editingSignal) {
+        if (editingSignal > 0) {
+            editing = true
+            runCatching { fieldFocus.requestFocus() }
+        }
+    }
     LaunchedEffect(editing) {
+        onEditingChange(editing)
         if (editing) {
             delay(200)
             keyboard?.show()
@@ -773,6 +784,7 @@ private fun TvTextField(
             onValueChange = onValueChange,
             modifier = inputModifier.fillMaxWidth().height(52.dp)
                 .semantics { contentDescription = label }
+                .focusRequester(fieldFocus)
                 .onFocusChanged {
                     focused = it.isFocused
                     if (!it.isFocused) {
@@ -797,7 +809,10 @@ private fun TvTextField(
             keyboardOptions = KeyboardOptions(imeAction = if (downFocus == null) ImeAction.Done else ImeAction.Next),
             keyboardActions = KeyboardActions(
                 onNext = { finishEditing(downFocus) },
-                onDone = { finishEditing(null) },
+                onDone = {
+                    finishEditing(null)
+                    onDone()
+                },
             ),
             visualTransformation = visualTransformation,
             decorationBox = { innerTextField ->
