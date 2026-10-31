@@ -1,5 +1,7 @@
 package com.fnmusic.tv.ui
 
+import android.app.Activity
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -57,6 +59,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -93,6 +96,7 @@ internal fun FnMusicApp(container: AppUiDependencies, onExitApplication: () -> U
     val session by container.sessionRepository.state.collectAsStateWithLifecycle()
     val playback by container.playbackController.state.collectAsStateWithLifecycle()
     val updateState by container.updateController.state.collectAsStateWithLifecycle()
+    KeepScreenOnWhilePlaying(playback.isPlaying)
     FnMusicTheme {
         Box(Modifier.fillMaxSize().background(FnColors.Background)) {
             when (val current = session) {
@@ -123,6 +127,21 @@ internal fun FnMusicApp(container: AppUiDependencies, onExitApplication: () -> U
                 }
             }
             UpdateDialogHost(updateState, container.updateController)
+        }
+    }
+}
+
+/**
+ * 播放歌曲时保持屏幕常亮（FLAG_KEEP_SCREEN_ON），避免电视屏保在无交互时被触发；
+ * 暂停/停止后清除标志，恢复系统默认的息屏与屏保行为。
+ */
+@Composable
+private fun KeepScreenOnWhilePlaying(isPlaying: Boolean) {
+    val context = LocalContext.current
+    LaunchedEffect(context, isPlaying) {
+        (context as? Activity)?.window?.let { window ->
+            if (isPlaying) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 }
