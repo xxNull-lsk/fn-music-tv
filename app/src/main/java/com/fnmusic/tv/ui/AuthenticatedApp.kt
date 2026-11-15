@@ -66,6 +66,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -154,6 +155,7 @@ import com.fnmusic.tv.core.playback.PlaybackProgressState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
@@ -2144,6 +2146,8 @@ private fun FolderDetailScreen(
         detailHeader = TrackDetailHeader(
             kind = "文件夹",
             extraMetadata = headerMetadata,
+            // 紧凑页头：文件夹层级较深，给曲目列表与子文件夹网格留更多空间。
+            compact = true,
             headerArtwork = { modifier ->
                 val name = directoryDisplayName(directory)
                 if (headerCoverIds.isEmpty()) {
@@ -2376,7 +2380,7 @@ internal fun <T> CatalogListPage(
     val gridState = rememberLazyGridState()
 
     fun load(page: Int) {
-        if (retained.loading || page > 1 && !snapshot.hasNext) return
+        if (retained.loading || page > 1 && !retained.snapshot.hasNext) return
         retained.loading = true
         retainedStore.scope.launch {
             runCatching { loader(page) }
@@ -2404,6 +2408,16 @@ internal fun <T> CatalogListPage(
             if (shouldLoadInitialPage(retained.snapshot)) {
                 load(1)
             }
+        }
+        // 触屏滚动预取：焦点预取只覆盖遥控器，触摸滚动时按滚动位置自动加载下一页。
+        LaunchedEffect(gridState, displayEntries.size) {
+            snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+                .distinctUntilChanged()
+                .collect { lastVisibleIndex ->
+                    val snap = retained.snapshot
+                    if (!snap.hasNext || retained.loading) return@collect
+                    if (lastVisibleIndex >= displayEntries.size - spec.columns * 2) load(snap.page + 1)
+                }
         }
 
         Column(
@@ -2614,6 +2628,8 @@ internal data class TrackDetailHeader(
      * 未提供时按 [artworkFallback] 渲染默认占位图。
      */
     val headerArtwork: (@Composable (Modifier) -> Unit)? = null,
+    /** 紧凑页头：更小的图与标题字号，给下方列表留出更多空间（如文件夹详情）。 */
+    val compact: Boolean = false,
     val onBack: () -> Unit,
 )
 
@@ -2743,6 +2759,16 @@ private fun ArtistAlbumGrid(
             tileHeight = 106.dp,
             spacing = 12.dp,
         )
+        // 触屏滚动预取：焦点预取只覆盖遥控器，触摸滚动时按滚动位置自动加载下一页。
+        LaunchedEffect(gridState, albums.size) {
+            snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+                .distinctUntilChanged()
+                .collect { lastVisibleIndex ->
+                    val snap = snapshot
+                    if (!snap.hasNext || loading) return@collect
+                    if (lastVisibleIndex >= albums.size - 6) onLoad(snap.page + 1)
+                }
+        }
         AdaptiveGridContentScale(spec) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(spec.columns),
@@ -3047,6 +3073,16 @@ internal fun TrackCollection(
             }
         }
     }
+    // 触屏滚动预取：焦点预取只覆盖遥控器，触摸滚动时按滚动位置自动加载下一页。
+    LaunchedEffect(listState, tracks.size) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+            .distinctUntilChanged()
+            .collect { lastVisibleIndex ->
+                val snap = retained.snapshot
+                if (!snap.hasNext || retained.loading) return@collect
+                if (lastVisibleIndex >= tracks.size - 6) load(snap.page + 1)
+            }
+    }
     DetailTrackCollection(
         container = container,
         header = detailHeader,
@@ -3107,7 +3143,7 @@ private fun DetailTrackCollection(
     alternateContent: @Composable () -> Unit,
     emptyMessage: String,
 ) {
-    Column(Modifier.fillMaxSize().padding(horizontal = 42.dp, vertical = 24.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 42.dp, vertical = if (header.compact) 16.dp else 24.dp)) {
         // 行高随内容自适应（不低于图高），避免固定高度把页头撑得过高。
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.Top) {
             DetailBackButton(
@@ -3119,28 +3155,30 @@ private fun DetailTrackCollection(
             Spacer(Modifier.width(18.dp))
             val artworkShape = RoundedCornerShape(6.dp)
             val headerArtwork = header.headerArtwork
+            // 紧凑页头用更小的图与标题，给下方列表留出更多可视空间。
+            val artworkSize = if (header.compact) 96.dp else 148.dp
             if (headerArtwork != null) {
-                headerArtwork(Modifier.size(148.dp))
+                headerArtwork(Modifier.size(artworkSize))
             } else {
                 CollectionArtwork(
                     container = container,
                     title = title,
                     coverId = coverId,
                     fallback = header.artworkFallback,
-                    modifier = Modifier.size(148.dp),
+                    modifier = Modifier.size(artworkSize),
                     shape = artworkShape,
                 )
             }
-            Spacer(Modifier.width(24.dp))
+            Spacer(Modifier.width(if (header.compact) 18.dp else 24.dp))
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 if (header.kind.isNotBlank() && header.kind != title) {
                     Text(header.kind, color = FnColors.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(7.dp))
+                    Spacer(Modifier.height(if (header.compact) 4.dp else 7.dp))
                 }
                 Text(
                     title,
-                    fontSize = 36.sp,
-                    lineHeight = 40.sp,
+                    fontSize = if (header.compact) 26.sp else 36.sp,
+                    lineHeight = if (header.compact) 30.sp else 40.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -3151,11 +3189,17 @@ private fun DetailTrackCollection(
                     header.extraMetadata?.takeIf(String::isNotBlank)?.let(::add)
                 }.joinToString("  ·  ")
                 if (metadata.isNotBlank()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(metadata, color = FnColors.Muted, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(if (header.compact) 5.dp else 8.dp))
+                    Text(
+                        metadata,
+                        color = FnColors.Muted,
+                        fontSize = if (header.compact) 14.sp else 18.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 Spacer(Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(if (header.compact) 8.dp else 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     header.tabs.forEach { tab ->
                         DetailTabButton(
                             label = tab.label,
@@ -3171,14 +3215,14 @@ private fun DetailTrackCollection(
                             onClick = tab.onSelect,
                         )
                     }
-                    val primaryShape = RoundedCornerShape(6.dp)
+                    val primaryShape = RoundedCornerShape(5.dp)
                     Button(
                         enabled = primaryActionEnabled,
                         onClick = onPrimaryAction,
                         modifier = Modifier
                             .then(if (focusedKey == "primary-action") Modifier.focusRequester(restoredFocus) else Modifier)
                             .onFocusChanged { if (it.isFocused) onFocusKey("primary-action") }
-                            .height(44.dp),
+                            .height(40.dp),
                         shape = ButtonDefaults.shape(
                             primaryShape,
                             primaryShape,
@@ -3186,7 +3230,7 @@ private fun DetailTrackCollection(
                             primaryShape,
                             primaryShape,
                         ),
-                        scale = ButtonDefaults.scale(focusedScale = 1.035f),
+                        scale = ButtonDefaults.scale(focusedScale = 1.04f),
                         colors = ButtonDefaults.colors(
                             containerColor = FnColors.Surface,
                             contentColor = FnColors.Text,
@@ -3195,19 +3239,14 @@ private fun DetailTrackCollection(
                             pressedContainerColor = FnColors.FocusFill,
                             pressedContentColor = FnColors.Text,
                         ),
-                        border = ButtonDefaults.border(
-                            border = Border(BorderStroke(1.dp, FnColors.Coral.copy(alpha = 0.76f)), shape = primaryShape),
-                            focusedBorder = Border(BorderStroke(1.5.dp, FnColors.Coral), shape = primaryShape),
-                            pressedBorder = Border(BorderStroke(1.5.dp, FnColors.Coral), shape = primaryShape),
-                        ),
-                        contentPadding = PaddingValues(horizontal = 19.dp, vertical = 0.dp),
+                        contentPadding = PaddingValues(horizontal = 17.dp, vertical = 0.dp),
                     ) {
-                        Text("▶  $primaryActionLabel", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text("▶ $primaryActionLabel", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(if (header.compact) 10.dp else 18.dp))
         Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.12f)))
         if (showTrackList) {
             DetailTrackColumnHeader()
