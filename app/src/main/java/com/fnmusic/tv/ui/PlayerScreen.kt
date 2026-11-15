@@ -1176,6 +1176,8 @@ internal fun InitialArtworkPlaceholder(
         val glyphSize = when {
             maxWidth <= 60.dp -> 18.sp
             maxWidth <= 96.dp -> 25.sp
+            // 98-128dp 的瓦片图标：52sp 的字形会超出 0.58f 的圆形底衬，需要中间档。
+            maxWidth <= 128.dp -> 38.sp
             maxWidth <= 220.dp -> 52.sp
             else -> 72.sp
         }
@@ -1189,8 +1191,13 @@ internal fun InitialArtworkPlaceholder(
             Text(
                 text.trim().take(1).ifBlank { "音" }.uppercase(),
                 color = accent.copy(alpha = 0.96f),
-                fontSize = glyphSize,
-                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                style = TextStyle(
+                    fontSize = glyphSize,
+                    fontWeight = FontWeight.SemiBold,
+                    // 关闭 includeFontPadding：CJK 回退字体的行内边距会让字形偏向右下。
+                    platformStyle = PlatformTextStyle(includeFontPadding = false),
+                ),
             )
         }
     }

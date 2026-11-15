@@ -69,6 +69,18 @@ sealed interface QueueSource {
     data class LibraryAllTracks(override val sort: String) : QueueSource
     data class Favorites(override val sort: String) : QueueSource
     data class SearchTracks(val keyword: String, override val sort: String) : QueueSource
+
+    /** 风格筛选队列（复刻官方 APK 的 genre 筛选；`guid` 为风格 GUID）。 */
+    data class Genre(val guid: String, override val sort: String) : QueueSource
+
+    /** 文件夹筛选队列（复刻官方 APK 的文件夹浏览；`directory` 为完整目录路径）。 */
+    data class Folder(val directory: String, override val sort: String) : QueueSource
+
+    /**
+     * 同名同歌手专辑的合并队列：服务端按 guid 拆分的同一名称专辑（如自动归档的
+     * “纯音乐”）在客户端聚合成一个列表，`guids` 为全部成员专辑的 guid。
+     */
+    data class MergedAlbum(val guids: List<String>, override val sort: String) : QueueSource
 }
 
 data class QueueCursor(

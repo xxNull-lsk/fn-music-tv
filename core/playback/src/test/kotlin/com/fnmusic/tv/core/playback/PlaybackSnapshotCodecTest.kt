@@ -249,6 +249,75 @@ class PlaybackSnapshotCodecTest {
         )
     }
 
+    @Test
+    fun `genre and folder queue sources survive snapshot round trip`() {
+        val genreDecoded = requireNotNull(
+            PlaybackSnapshotCodec.decode(PlaybackSnapshotCodec.encode(snapshotFor(QueueSource.Genre("genre-123", "createdAt,desc")))),
+        )
+        assertEquals(QueueSource.Genre("genre-123", "createdAt,desc"), genreDecoded.source)
+
+        val folderSource = QueueSource.Folder("/vol2/1000/歌曲/英语/music", "createdAt,desc")
+        val encoded = PlaybackSnapshotCodec.encode(snapshotFor(folderSource))
+        val folderDecoded = requireNotNull(PlaybackSnapshotCodec.decode(encoded))
+        assertEquals(folderSource, folderDecoded.source)
+
+        // 编码后的业务键必须是目录路径（folder 的 guid 位），而不是风格 GUID。
+        val sourceBody = JSONObject(encoded).getJSONObject("source")
+        assertEquals("folder", sourceBody.getString("kind"))
+        assertEquals("/vol2/1000/歌曲/英语/music", sourceBody.getString("guid"))
+    }
+
+    @Test
+    fun `merged album queue source survives snapshot round trip`() {
+        val source = QueueSource.MergedAlbum(listOf("album-1", "album-2", "album-3"), "trackNo,asc")
+        val encoded = PlaybackSnapshotCodec.encode(snapshotFor(source))
+        val decoded = requireNotNull(PlaybackSnapshotCodec.decode(encoded))
+        assertEquals(source, decoded.source)
+
+        val sourceBody = JSONObject(encoded).getJSONObject("source")
+        assertEquals("album-merged", sourceBody.getString("kind"))
+        assertEquals("album-1,album-2,album-3", sourceBody.getString("guid"))
+    }
+
+    @Test
+    fun `snapshot with unknown source kind is rejected without partial decode`() {
+        val encoded = PlaybackSnapshotCodec.encode(snapshotFor(QueueSource.Folder("/vol2/1000/歌曲", "createdAt,desc")))
+        val withUnknownSource = JSONObject(encoded)
+            .getJSONObject("source")
+            .put("kind", "mystery")
+            .let { JSONObject(encoded).put("source", it) }
+            .toString()
+        assertNull(PlaybackSnapshotCodec.decode(withUnknownSource))
+    }
+
+    private fun snapshotFor(source: QueueSource) = PlaybackSnapshot(
+        generation = 1,
+        revision = 2,
+        items = listOf(mediaItem("filter-a")),
+        index = 0,
+        positionMs = 0,
+        source = source,
+        window = SlidingQueueState.fromSegments(
+            listOf(
+                QueuePageSegment(
+                    page = 1,
+                    rawRowCount = 1,
+                    playableItems = listOf(QueuePageItem("filter-a", 0)),
+                    sort = source.sort,
+                    knownTotal = 1,
+                ),
+            ),
+            currentIndex = 0,
+        ),
+        kind = QueueKind.Normal,
+        mode = PlayMode.ListRepeat,
+        shuffleOrder = emptyList(),
+        roamWindow = null,
+        currentRoamId = null,
+        frozen = null,
+        playIntent = PlaybackPlayIntent.Pause,
+    )
+
     private fun mediaItem(id: String): MediaItem = MediaItem.Builder()
         .setMediaId(id)
         .setUri("https://example.test/$id.flac")

@@ -3,6 +3,7 @@ package com.fnmusic.tv.core.data.api
 import com.fnmusic.tv.core.model.CollectionGuid
 import com.fnmusic.tv.core.model.Album
 import com.fnmusic.tv.core.model.Artist
+import com.fnmusic.tv.core.model.Genre
 import com.fnmusic.tv.core.model.LyricDocument
 import com.fnmusic.tv.core.model.Playlist
 import com.fnmusic.tv.core.model.RoamNode
@@ -86,8 +87,21 @@ data class AudioSpecDto(
     val container: String = "",
     val duration: Long = 0,
     val bitrate: Long = 0,
+    /** 音频文件完整路径（服务端实测字段）；旧缓存 payload 可能缺失。 */
+    val path: String = "",
 ) {
     fun displayFormat(): String? = container.ifBlank { codec }.trim().uppercase().takeIf(String::isNotBlank)
+}
+
+/** 服务端 `genre/list` / `genre/detail` / 嵌套在 TrackDto.genres 中的风格实体（实测 2026-11-06）。 */
+@Serializable
+data class GenreDto(
+    val guid: String,
+    val name: String,
+    val coverId: String? = null,
+    val trackCount: Int? = null,
+) {
+    fun toDomain() = Genre(CollectionGuid(guid), name, coverId, trackCount)
 }
 
 @Serializable
@@ -99,6 +113,7 @@ data class TrackDto(
     val isCue: Boolean = false,
     val album: AlbumDto? = null,
     val artists: List<ArtistDto> = emptyList(),
+    val genres: List<GenreDto> = emptyList(),
     val audioSpec: AudioSpecDto = AudioSpecDto(),
     val accessStatus: Int? = null,
     val isFavorite: Boolean = false,
@@ -114,6 +129,8 @@ data class TrackDto(
         accessStatus = accessStatus,
         audioFormat = sourceAudioSpec.displayFormat(),
         isFavorite = isFavorite,
+        genreNames = genres.map(GenreDto::name),
+        path = sourceAudioSpec.path.trim().takeIf(String::isNotBlank),
     )
 }
 
@@ -125,8 +142,9 @@ data class SharedLibraryDto(
     val name: String,
     val accessStatus: Int = -1,
     val updatedAt: Long = 0,
+    val path: String = "",
 ) {
-    fun toDomain() = SharedLibrary(CollectionGuid(guid), name, accessStatus, updatedAt)
+    fun toDomain() = SharedLibrary(CollectionGuid(guid), name, accessStatus, updatedAt, path.trim().takeIf(String::isNotBlank))
 }
 
 @Serializable data class ListDto<T>(val list: List<T> = emptyList())

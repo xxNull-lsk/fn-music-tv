@@ -53,6 +53,17 @@ data class Track(
     val accessStatus: Int? = null,
     val audioFormat: String? = null,
     val isFavorite: Boolean = false,
+    /** 歌曲的风格（genre）名称，取自服务端 genres 列表；旧缓存可能为空。 */
+    val genreNames: List<String> = emptyList(),
+    /** 服务端音频文件完整路径，是文件夹视图客户端分组的唯一数据源；旧缓存可能为空。 */
+    val path: String? = null,
+)
+
+data class Genre(
+    val guid: CollectionGuid,
+    val name: String,
+    val coverId: String? = null,
+    val trackCount: Int? = null,
 )
 
 data class SharedLibrary(
@@ -60,6 +71,8 @@ data class SharedLibrary(
     val name: String,
     val accessStatus: Int,
     val updatedAt: Long,
+    /** 音乐库（文件夹）在 NAS 上的路径；旧缓存可能为空。 */
+    val path: String? = null,
 )
 
 data class Page<T>(

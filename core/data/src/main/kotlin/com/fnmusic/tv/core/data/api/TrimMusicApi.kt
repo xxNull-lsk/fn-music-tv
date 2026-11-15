@@ -80,6 +80,28 @@ class TrimMusicApi(
     suspend fun albumTracks(guid: String, page: Int, size: Int = 50): SortedPageListDto<TrackDto> =
         get("track/album-detail/list", "albumGUID" to guid, "page" to page, "size" to size, "sort" to "trackNo,asc")
 
+    /**
+     * 风格分页列表。端点与参数名来自官方 APK（Flutter）逆推 + 真实 NAS 实测（2026-11-06，
+     * 见 `origin/analysis/fn_genre_folder_probe2.py`）。
+     */
+    suspend fun genres(page: Int, size: Int = 50): SortedPageListDto<GenreDto> =
+        get("genre/list", "page" to page, "size" to size, "sort" to GENRE_SORT)
+
+    suspend fun genre(guid: String): GenreDto = get("genre/detail", "guid" to guid)
+
+    /**
+     * 某一风格下的歌曲分页。实测服务端只接受默认排序 `createdAt,desc`（其它 sort 键被忽略），
+     * 因此这里固定为默认值，保证响应 `sort` 与队列分页契约一致。
+     */
+    suspend fun genreTracks(guid: String, page: Int, size: Int = 50): SortedPageListDto<TrackDto> =
+        get(
+            "track/genre-detail/list",
+            "genreGUID" to guid,
+            "page" to page,
+            "size" to size,
+            "sort" to GENRE_TRACKS_SORT,
+        )
+
     suspend fun allTracks(page: Int, size: Int = 50): SortedPageListDto<TrackDto> =
         get("track/list", "page" to page, "size" to size, "sort" to "createdAt,desc")
 
@@ -282,6 +304,15 @@ class TrimMusicApi(
 
         /** Relevance ordering for search endpoints; swap here if the server expects a different sort key. */
         const val SEARCH_SORT: String = "createdAt,desc"
+
+        /** Genre list ordering, verified against a live NAS (2026-11-06): `genre/list` honors `name,asc`. */
+        const val GENRE_SORT: String = "name,asc"
+
+        /**
+         * `track/genre-detail/list` sort, verified against a live NAS (2026-11-06): the server
+         * echoes `createdAt,desc` regardless of requested key, so keep the default explicit.
+         */
+        const val GENRE_TRACKS_SORT: String = "createdAt,desc"
 
         fun client(): OkHttpClient = OkHttpClient.Builder()
             .followRedirects(false)

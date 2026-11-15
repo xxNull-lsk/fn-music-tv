@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import com.fnmusic.tv.core.data.api.AlbumDto
 import com.fnmusic.tv.core.data.api.ApiDecoder
 import com.fnmusic.tv.core.data.api.ArtistDto
+import com.fnmusic.tv.core.data.api.GenreDto
 import com.fnmusic.tv.core.data.api.LyricListDto
 import com.fnmusic.tv.core.data.api.PlaylistDetailDto
 import com.fnmusic.tv.core.data.api.PlaylistDto
@@ -23,6 +24,7 @@ import com.fnmusic.tv.core.model.AppError
 import com.fnmusic.tv.core.model.AppException
 import com.fnmusic.tv.core.model.Artist
 import com.fnmusic.tv.core.model.CoverVariant
+import com.fnmusic.tv.core.model.Genre
 import com.fnmusic.tv.core.model.LyricDocument
 import com.fnmusic.tv.core.model.Page
 import com.fnmusic.tv.core.model.PlaybackTrack
@@ -30,6 +32,7 @@ import com.fnmusic.tv.core.model.Playlist
 import com.fnmusic.tv.core.model.RoamWindow
 import com.fnmusic.tv.core.model.SharedLibrary
 import com.fnmusic.tv.core.model.Track
+import com.fnmusic.tv.core.model.directoryPath
 import com.fnmusic.tv.core.model.playback.QueueSource
 import com.fnmusic.tv.core.model.preferences.CacheUsage
 import com.fnmusic.tv.core.lyrics.DefaultLyricsSources
@@ -42,6 +45,10 @@ import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,7 +57,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 
@@ -203,6 +212,10 @@ class MusicRepository internal constructor(
     private val favoriteMutationMutex = Mutex()
     private val _favoriteState = MutableStateFlow(FavoriteLibraryState())
     val favoriteState: StateFlow<FavoriteLibraryState> = _favoriteState.asStateFlow()
+    /** 整库扫描单飞协程的后台作用域：调用方取消不会中断进行中的扫描。 */
+    private val scanScope: CoroutineScope = repositoryScope
+    private val scanMutex = Mutex()
+    private var activeScan: Deferred<List<Track>>? = null
     private val artworkCache = ArtworkCache(
         root = context.cacheDir.resolve("artwork"),
         memoryCapacityBytes = ARTWORK_MEMORY_CAPACITY_BYTES,
@@ -273,11 +286,147 @@ class MusicRepository internal constructor(
         fetch = { session.authenticated { it.albumTracks(guid, page) } },
     ) { it.toDomain() }.also(::observeFavoriteTracks)
 
-    suspend fun allTracks(page: Int) = cachedPage<TrackDto, Track>(
-        sourceKey = "all-tracks",
+    /**
+     * 风格分页。官方 APK 的乐库筛选（文件夹/风格）复刻：genre/list 实测响应解析见
+     * `origin/analysis/fn_genre_folder_probe2.py`。
+     */
+    suspend fun genres(page: Int, size: Int = 50) = cachedPage<GenreDto, Genre>(
+        sourceKey = sizedPageSourceKey("genres", size),
         page = page,
-        fetch = { session.authenticated { it.allTracks(page) } },
+        pageSize = size,
+        fetch = { session.authenticated { it.genres(page, size) } },
+    ) { it.toDomain() }
+
+    suspend fun genre(guid: String): Genre = cachedIndex<GenreDto, Genre>(
+        key = "genre:$guid",
+        fetch = { session.authenticated { it.genre(guid) } },
+    ) { it.toDomain() }
+
+    suspend fun genreTracks(guid: String, page: Int) = cachedPage<TrackDto, Track>(
+        sourceKey = "genre-tracks:$guid",
+        page = page,
+        fetch = { session.authenticated { it.genreTracks(guid, page) } },
     ) { it.toDomain() }.also(::observeFavoriteTracks)
+
+    suspend fun allTracks(page: Int, size: Int = PAGE_SIZE) = cachedPage<TrackDto, Track>(
+        sourceKey = sizedPageSourceKey("all-tracks", size),
+        page = page,
+        pageSize = size,
+        fetch = { session.authenticated { it.allTracks(page, size) } },
+    ) { it.toDomain() }.also(::observeFavoriteTracks)
+
+    /**
+     * 顺序扫描整库（文件夹筛选的基础）。服务端实测（2026-11-06）`track/list`
+     * 不支持任何按路径过滤的参数，文件夹视图就像官方 APK 一样在客户端分组。
+     *
+     * 单飞执行：并发调用（如文件夹详情页的扫描与歌曲列表加载器）共享同一个
+     * 进行中的扫描，调用方等待其完整结束——避免竞态下拿到不完整/空的扫描结果。
+     * 成功结果短期备忘（[SCAN_MEMO_TTL_MS]）：文件夹详情页的多次 folderTracks
+     * 调用直接复用，不再逐页读缓存解码。
+     */
+    private var scanMemoResult: List<Track>? = null
+    private var scanMemoAt: Long = 0L
+
+    suspend fun scanAllTracks(pageSize: Int = LIBRARY_SCAN_PAGE_SIZE): List<Track> {
+        while (true) {
+            val memoHit = scanMutex.withLock {
+                scanMemoResult?.takeIf { memo ->
+                    memo.isNotEmpty() && now() - scanMemoAt < SCAN_MEMO_TTL_MS
+                }
+            }
+            if (memoHit != null) return memoHit
+
+            val deferred: Deferred<List<Track>> = scanMutex.withLock {
+                scanMemoResult?.takeIf { memo ->
+                    memo.isNotEmpty() && now() - scanMemoAt < SCAN_MEMO_TTL_MS
+                }?.let { return it }
+                    ?: scanScope.async { scanAllTracksLoop(pageSize) }.also { activeScan = it }
+            }
+            try {
+                val result = deferred.await()
+                scanMutex.withLock {
+                    // 空结果不备忘（可能是瞬时异常），下次调用重新扫描。
+                    if (result.isNotEmpty()) {
+                        scanMemoResult = result
+                        scanMemoAt = now()
+                    }
+                }
+                return result
+            } finally {
+                scanMutex.withLock {
+                    // 扫描已结束（含失败）则清除；被取消的调用不打断后台仍在进行的扫描。
+                    if (activeScan === deferred && deferred.isCompleted) activeScan = null
+                }
+            }
+        }
+    }
+
+    /**
+     * 扫描循环：第一页拿总数推算页数，其余页并发抓取（限流）后按页序拼接，
+     * 把原本串行的 N 次请求压缩到约一次请求的时延。
+     */
+    private suspend fun scanAllTracksLoop(pageSize: Int): List<Track> = coroutineScope {
+        val first = allTracks(1, pageSize)
+        if (first.items.isEmpty()) return@coroutineScope emptyList()
+        if (first.total <= first.items.size) return@coroutineScope first.items
+        val lastPage = (first.total + pageSize - 1) / pageSize
+        if (lastPage <= 1) return@coroutineScope first.items
+        val semaphore = Semaphore(4)
+        val rest = (2..lastPage)
+            .map { page ->
+                async { semaphore.withPermit { page to allTracks(page, pageSize) } }
+            }
+            .awaitAll()
+            .sortedBy { it.first }
+            .map { it.second.items }
+        first.items + rest.flatten()
+    }
+
+    /**
+     * 某个目录下的歌曲分页（客户端投影：整库扫描后按 `Track.path` 父目录过滤）。
+     * `sort` 采用扫描顺序的 `createdAt,desc`，与 QueueSource.Folder 的分页契约一致。
+     */
+    suspend fun folderTracks(directory: String, page: Int): Page<Track> {
+        val matches = scanAllTracks().filter { it.directoryPath() == directory }
+        val pageSize = PAGE_SIZE
+        val start = (page.coerceAtLeast(1) - 1) * pageSize
+        val slice = matches.drop(start).take(pageSize)
+        return Page(
+            items = slice,
+            page = page,
+            pageSize = pageSize,
+            total = matches.size,
+            sort = SCAN_SORT,
+        )
+    }
+
+    /**
+     * 同名同歌手专辑的合并曲目分页：逐个成员 guid 取全量曲目后拼接，再按页切片。
+     * 成员专辑通常很小（每个只有少量歌曲），曲目请求会命中响应缓存。
+     */
+    suspend fun albumTracksMerged(guids: List<String>, page: Int): Page<Track> {
+        require(guids.isNotEmpty())
+        if (guids.size == 1) return albumTracks(guids.first(), page)
+        val all = guids.flatMap { guid ->
+            var memberPage = 1
+            val memberTracks = mutableListOf<Track>()
+            while (true) {
+                val loaded = albumTracks(guid, memberPage)
+                memberTracks += loaded.items
+                if (!loaded.hasNext || loaded.items.isEmpty()) break
+                memberPage++
+            }
+            memberTracks
+        }
+        val start = (page.coerceAtLeast(1) - 1) * PAGE_SIZE
+        return Page(
+            items = all.drop(start).take(PAGE_SIZE),
+            page = page,
+            pageSize = PAGE_SIZE,
+            total = all.size,
+            sort = ALBUM_MERGED_SORT,
+        )
+    }
 
     suspend fun favoriteTracks(page: Int): Page<Track> {
         val namespace = session.cacheNamespace()
@@ -376,9 +525,12 @@ class MusicRepository internal constructor(
         is QueueSource.Playlist -> playlistTracks(source.guid, page)
         is QueueSource.Artist -> artistTracks(source.guid, page)
         is QueueSource.Album -> albumTracks(source.guid, page)
+        is QueueSource.MergedAlbum -> albumTracksMerged(source.guids, page)
         is QueueSource.LibraryAllTracks -> allTracks(page)
         is QueueSource.Favorites -> favoriteTracks(page)
         is QueueSource.SearchTracks -> searchTracks(source.keyword, page)
+        is QueueSource.Genre -> genreTracks(source.guid, page)
+        is QueueSource.Folder -> folderTracks(source.directory, page)
     }
 
     suspend fun sharedLibraries(): List<SharedLibrary> = cachedIndex<List<SharedLibraryDto>, List<SharedLibrary>>(
@@ -686,6 +838,16 @@ class MusicRepository internal constructor(
         const val FAVORITE_SORT = "favoriteAt,desc"
         const val SEARCH_SORT = "createdAt,desc"
         const val SEARCH_TRACKS_SORT = SEARCH_SORT
+
+        /** 文件夹扫描（queuePage(Folder) / folderTracks）整库分页大小：实测服务端 ≥400 可用。 */
+        const val LIBRARY_SCAN_PAGE_SIZE = 400
+        const val SCAN_SORT = "createdAt,desc"
+
+        /** 整库扫描成功结果的备忘时长：文件夹详情页的多次调用在窗口内直接复用。 */
+        const val SCAN_MEMO_TTL_MS = 30_000L
+
+        /** 合并专辑的曲目排序标识（成员专辑各自按 trackNo 升序拼接）。 */
+        const val ALBUM_MERGED_SORT = "trackNo,asc"
 
         fun defaultOnlineLyricsMatcher(): suspend (LyricsMatchRequest) -> LyricsMatchResult {
             val client = okhttp3.OkHttpClient.Builder()

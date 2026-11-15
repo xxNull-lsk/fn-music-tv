@@ -41,6 +41,9 @@ internal object PlaybackSnapshotCodec {
     const val Version = 2
     private const val MaxItems = 250
 
+    /** 合并专辑队列多 guid 的编码分隔符（guid 本身不含逗号）。 */
+    private const val GuidSeparator = ","
+
     fun encode(snapshot: PlaybackSnapshot): String = encodeSnapshot(snapshot, depth = 0).toString()
 
     fun decode(encoded: String, legacyFrozen: String? = null): PlaybackSnapshot? = runCatching {
@@ -313,9 +316,12 @@ internal object PlaybackSnapshotCodec {
                 is QueueSource.Playlist -> "playlist"
                 is QueueSource.Artist -> "artist"
                 is QueueSource.Album -> "album"
+                is QueueSource.MergedAlbum -> "album-merged"
                 is QueueSource.LibraryAllTracks -> "all"
                 is QueueSource.Favorites -> "favorites"
                 is QueueSource.SearchTracks -> "search"
+                is QueueSource.Genre -> "genre"
+                is QueueSource.Folder -> "folder"
             },
         )
         .put(
@@ -324,9 +330,12 @@ internal object PlaybackSnapshotCodec {
                 is QueueSource.Playlist -> source.guid
                 is QueueSource.Artist -> source.guid
                 is QueueSource.Album -> source.guid
+                is QueueSource.MergedAlbum -> source.guids.joinToString(GuidSeparator)
                 is QueueSource.LibraryAllTracks -> ""
                 is QueueSource.Favorites -> ""
                 is QueueSource.SearchTracks -> source.keyword
+                is QueueSource.Genre -> source.guid
+                is QueueSource.Folder -> source.directory
             },
         )
         .put("sort", source.sort)
@@ -338,9 +347,15 @@ internal object PlaybackSnapshotCodec {
             "playlist" -> QueueSource.Playlist(guid.also { require(it.isNotBlank()) }, sort)
             "artist" -> QueueSource.Artist(guid.also { require(it.isNotBlank()) }, sort)
             "album" -> QueueSource.Album(guid.also { require(it.isNotBlank()) }, sort)
+            "album-merged" -> QueueSource.MergedAlbum(
+                guid.split(GuidSeparator).also { require(it.all(String::isNotBlank)) },
+                sort,
+            )
             "all" -> QueueSource.LibraryAllTracks(sort)
             "favorites" -> QueueSource.Favorites(sort)
             "search" -> QueueSource.SearchTracks(guid.also { require(it.isNotBlank()) }, sort)
+            "genre" -> QueueSource.Genre(guid.also { require(it.isNotBlank()) }, sort)
+            "folder" -> QueueSource.Folder(guid.also { require(it.isNotBlank()) }, sort)
             else -> error("Unknown playback queue source")
         }
     }
