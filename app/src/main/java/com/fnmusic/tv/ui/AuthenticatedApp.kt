@@ -77,6 +77,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ColorFilter
@@ -204,6 +205,7 @@ internal fun AuthenticatedApp(
     val playerVisualContinuity = remember(session.user.guid) { PlayerVisualContinuity() }
     val open: (LibraryRoute) -> Unit = { stack = stack + it }
     val root: (LibraryRoute) -> Unit = { stack = listOf(it) }
+    val replaceLast: (LibraryRoute) -> Unit = { stack = stack.dropLast(1) + it }
     val back: () -> Unit = { if (stack.size > 1) stack = stack.dropLast(1) }
     LaunchedEffect(route) {
         container.updateController.setAutomaticPromptAllowed(route !is LibraryRoute.Player)
@@ -296,17 +298,19 @@ internal fun AuthenticatedApp(
             detailHeader = TrackDetailHeader(
                 kind = "歌单",
                 declaredTrackCount = route.playlist.trackCount,
-                onBack = back,
             ),
         )
         LibraryRoute.Artists -> ArtistGrid(container, onOpen = { open(LibraryRoute.ArtistDetail(it)) })
         LibraryRoute.Albums -> AlbumGrid(container, onOpen = { open(LibraryRoute.AlbumDetail(it)) })
         LibraryRoute.Genres -> GenreGrid(container, onOpen = { open(LibraryRoute.GenreDetail(it)) })
-        LibraryRoute.Folders -> FolderBrowseRoot(container, onOpenLibrary = { open(LibraryRoute.FolderDetail(it)) })
+        LibraryRoute.Folders -> FolderBrowseRoot(
+            container,
+            onOpenLibrary = { open(LibraryRoute.FolderDetail(it)) },
+            onAutoEnterSingleLibrary = { replaceLast(LibraryRoute.FolderDetail(it)) },
+        )
         is LibraryRoute.FolderDetail -> FolderDetailScreen(
             container = container,
             directory = route.directory,
-            onBack = back,
             onSubFolder = { open(LibraryRoute.FolderDetail(it)) },
             onPlayer = { open(LibraryRoute.Player(it)) },
         )
@@ -321,7 +325,6 @@ internal fun AuthenticatedApp(
             detailHeader = TrackDetailHeader(
                 kind = "音乐库",
                 artworkFallback = CollectionArtworkFallback.Collection,
-                onBack = back,
             ),
             primaryAction = TrackCollectionPrimaryAction.StartRoam {
                 open(LibraryRoute.Player(null))
@@ -339,7 +342,6 @@ internal fun AuthenticatedApp(
                 detailHeader = TrackDetailHeader(
                     kind = "收藏",
                     artworkFallback = CollectionArtworkFallback.Favorites,
-                    onBack = back,
                 ),
                 contentRevision = favoriteState.revision,
                 emptyMessage = "还没有收藏歌曲",
@@ -348,7 +350,6 @@ internal fun AuthenticatedApp(
         is LibraryRoute.ArtistDetail -> ArtistDetail(
             container = container,
             artist = route.artist,
-            onBack = back,
             onAlbum = { open(LibraryRoute.AlbumDetail(it)) },
             onPlayer = { open(LibraryRoute.Player(it)) },
         )
@@ -393,7 +394,6 @@ internal fun AuthenticatedApp(
                     extraMetadata = route.album.releaseDate,
                     // 合并专辑的总数以加载结果为准，代表专辑的声明数量（如 1 首）会误导。
                     declaredTrackCount = if (merged) null else route.album.trackCount,
-                    onBack = back,
                 ),
             )
         }
@@ -409,7 +409,6 @@ internal fun AuthenticatedApp(
                 kind = "风格",
                 declaredTrackCount = route.genre.trackCount,
                 extraMetadata = route.genre.name,
-                onBack = back,
             ),
         )
         is LibraryRoute.Player -> ImmersivePlayer(
@@ -2015,12 +2014,23 @@ private fun AllPlaylists(container: AuthenticatedAppDependencies, onOpen: (Playl
 private fun FolderBrowseRoot(
     container: AuthenticatedAppDependencies,
     onOpenLibrary: (String) -> Unit,
+    onAutoEnterSingleLibrary: (String) -> Unit,
 ) {
     val retainedStore = LocalLibraryRetainedState.current
     val libraryState = retainedStore.list<SharedLibrary>("shared-libraries:folders")
     val libraries = libraryState.snapshot.entries.filter { it.path != null && it.accessStatus == 0 }
     LaunchedEffect(Unit) {
         retainedStore.loadListOnce(libraryState, container.musicRepository::sharedLibraries)
+    }
+    // 仅有一个音乐库文件夹时直接把当前路由替换为该文件夹详情：
+    // 进入与返回都彻底越过根列表页，不会闪现只有一个条目的列表。
+    val singleLibrary = libraries.singleOrNull()?.takeIf { libraryState.snapshot.initialLoadCompleted }
+    if (singleLibrary != null) {
+        LaunchedEffect(singleLibrary.path) {
+            onAutoEnterSingleLibrary(singleLibrary.path.orEmpty())
+        }
+        Box(Modifier.fillMaxSize())
+        return
     }
     if (libraries.isEmpty()) {
         Column(Modifier.fillMaxSize().padding(horizontal = 64.dp).padding(top = 24.dp, bottom = 44.dp)) {
@@ -2054,8 +2064,10 @@ private fun FolderBrowseRoot(
         ) { onOpenLibrary(path) }
     }
     // 进入文件夹浏览即后台预热整库扫描：下钻任意目录时无需等待首次扫描。
+    // 数据加载统一跑在 Default 调度器：仓库层的 JSON 解码与缓存写盘不开协程切换，
+    // 若在主线程作用域执行会卡住触摸/焦点输入（实测滚动时主线程被解码拖住数秒）。
     LaunchedEffect(Unit) {
-        retainedStore.scope.launch {
+        retainedStore.scope.launch(Dispatchers.Default) {
             runCatching { container.musicRepository.scanAllTracks() }
         }
     }
@@ -2071,7 +2083,6 @@ private enum class FolderDetailSection { Songs, Folders }
 private fun FolderDetailScreen(
     container: AuthenticatedAppDependencies,
     directory: String,
-    onBack: () -> Unit,
     onSubFolder: (String) -> Unit,
     onPlayer: (Track) -> Unit,
 ) {
@@ -2144,10 +2155,13 @@ private fun FolderDetailScreen(
         externalLoading = scanLoading,
         contentRevision = if (scanLoading) 0L else 1L,
         detailHeader = TrackDetailHeader(
-            kind = "文件夹",
+            // 页头不再显示“文件夹”小标签：路径元信息已足以表达来源。
+            kind = "",
             extraMetadata = headerMetadata,
             // 紧凑页头：文件夹层级较深，给曲目列表与子文件夹网格留更多空间。
             compact = true,
+            // 按目录浏览时歌手列意义不大，隐藏列头与行内歌手副行。
+            showArtistColumn = false,
             headerArtwork = { modifier ->
                 val name = directoryDisplayName(directory)
                 if (headerCoverIds.isEmpty()) {
@@ -2166,7 +2180,6 @@ private fun FolderDetailScreen(
                 }
             },
             tabs = tabs,
-            onBack = onBack,
         ),
         showTrackList = selectedSection == FolderDetailSection.Songs,
         alternateContent = {
@@ -2174,6 +2187,7 @@ private fun FolderDetailScreen(
                 directory = directory,
                 directories = directoryView.directories,
                 loading = scanState.loading || !scanState.snapshot.initialLoadCompleted,
+                error = scanState.snapshot.error,
                 initialFocusEnabled = selectedSection == FolderDetailSection.Folders && focusedArea == "folders",
                 onFocused = { focusedAreaOverride = "folders" },
                 onDirectory = onSubFolder,
@@ -2188,6 +2202,7 @@ private fun FolderDirectoryGrid(
     directory: String,
     directories: List<TrackDirectory>,
     loading: Boolean,
+    error: AppError?,
     initialFocusEnabled: Boolean,
     onFocused: () -> Unit,
     onDirectory: (String) -> Unit,
@@ -2238,9 +2253,13 @@ private fun FolderDirectoryGrid(
                 if (directories.isEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Box(Modifier.fillMaxWidth().padding(vertical = 40.dp), contentAlignment = Alignment.Center) {
-                            // 整库扫描未完成时目录树尚不可用，显示加载中而不是空态。
+                            // 整库扫描未完成时目录树尚不可用，显示加载中而不是空态；失败时给出错误提示。
                             Text(
-                                if (loading) "正在加载子文件夹" else "该目录下没有子文件夹",
+                                when {
+                                    error != null -> "读取子文件夹失败（${appErrorMessage(error)}）"
+                                    loading -> "正在加载子文件夹"
+                                    else -> "该目录下没有子文件夹"
+                                },
                                 color = FnColors.Muted,
                                 fontSize = 12.sp,
                             )
@@ -2382,7 +2401,7 @@ internal fun <T> CatalogListPage(
     fun load(page: Int) {
         if (retained.loading || page > 1 && !retained.snapshot.hasNext) return
         retained.loading = true
-        retainedStore.scope.launch {
+        retainedStore.scope.launch(Dispatchers.Default) {
             runCatching { loader(page) }
                 .onSuccess { retained.snapshot = retainLoadedPage(retained.snapshot, it, key) }
                 .onFailure {
@@ -2630,7 +2649,11 @@ internal data class TrackDetailHeader(
     val headerArtwork: (@Composable (Modifier) -> Unit)? = null,
     /** 紧凑页头：更小的图与标题字号，给下方列表留出更多空间（如文件夹详情）。 */
     val compact: Boolean = false,
-    val onBack: () -> Unit,
+    /**
+     * 曲目列表是否显示“歌手”列头。行内歌手以标题下方副行的形式展示，
+     * 并不占用独立列，因此该列头是冗余的（文件夹按目录浏览时默认隐藏）。
+     */
+    val showArtistColumn: Boolean = true,
 )
 
 internal enum class CollectionArtworkFallback { Initial, Artist, Favorites, Collection }
@@ -2643,7 +2666,6 @@ internal sealed interface TrackCollectionPrimaryAction {
 private fun ArtistDetail(
     container: AuthenticatedAppDependencies,
     artist: Artist,
-    onBack: () -> Unit,
     onAlbum: (Album) -> Unit,
     onPlayer: (Track) -> Unit,
 ) {
@@ -2657,7 +2679,7 @@ private fun ArtistDetail(
     fun loadAlbums(target: Int) {
         if (albumState.loading || target > 1 && !albumState.snapshot.hasNext) return
         albumState.loading = true
-        retainedStore.scope.launch {
+        retainedStore.scope.launch(Dispatchers.Default) {
             runCatching { container.musicRepository.artistAlbums(artist.guid.value, target) }
                 .onSuccess {
                     albumState.snapshot = retainLoadedPage(albumState.snapshot, it) { album -> album.guid.value }
@@ -2702,7 +2724,6 @@ private fun ArtistDetail(
             extraMetadata = artist.albumCount?.let { "$it 张专辑" },
             artworkFallback = CollectionArtworkFallback.Artist,
             tabs = tabs,
-            onBack = onBack,
         ),
         showTrackList = selectedSection == ArtistDetailSection.Songs,
         alternateContent = {
@@ -2945,7 +2966,7 @@ internal fun TrackCollection(
     fun load(target: Int) {
         if (retained.loading) return
         retained.loading = true
-        retainedStore.scope.launch {
+        retainedStore.scope.launch(Dispatchers.Default) {
             runCatching { loader(target) }
                 .onSuccess {
                     retained.snapshot = retainTrackCollectionPage(retained.snapshot, it, target)
@@ -3056,7 +3077,6 @@ internal fun TrackCollection(
             if (primaryActionEnabled) add("primary-action")
             detailHeader.tabs.filter { it.selected }.forEach { add(it.key) }
             if (showTrackList) addAll(playableTracks.map { it.guid.value })
-            add("detail-back")
         }
         val targetKey = focusedKey?.takeIf(availableKeys::contains) ?: availableKeys.firstOrNull()
         if (focusedKey != targetKey) {
@@ -3144,15 +3164,8 @@ private fun DetailTrackCollection(
     emptyMessage: String,
 ) {
     Column(Modifier.fillMaxSize().padding(horizontal = 42.dp, vertical = if (header.compact) 16.dp else 24.dp)) {
-        // 行高随内容自适应（不低于图高），避免固定高度把页头撑得过高。
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.Top) {
-            DetailBackButton(
-                modifier = Modifier
-                    .then(if (focusedKey == "detail-back") Modifier.focusRequester(restoredFocus) else Modifier)
-                    .onFocusChanged { if (it.isFocused) onFocusKey("detail-back") },
-                onClick = header.onBack,
-            )
-            Spacer(Modifier.width(18.dp))
+        // 页头内容（封面、信息、操作按钮）垂直居中；行高取最高子项。
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             val artworkShape = RoundedCornerShape(6.dp)
             val headerArtwork = header.headerArtwork
             // 紧凑页头用更小的图与标题，给下方列表留出更多可视空间。
@@ -3170,7 +3183,7 @@ private fun DetailTrackCollection(
                 )
             }
             Spacer(Modifier.width(if (header.compact) 18.dp else 24.dp))
-            Column(Modifier.weight(1f).fillMaxHeight()) {
+            Column(Modifier.weight(1f)) {
                 if (header.kind.isNotBlank() && header.kind != title) {
                     Text(header.kind, color = FnColors.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(if (header.compact) 4.dp else 7.dp))
@@ -3198,58 +3211,62 @@ private fun DetailTrackCollection(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Spacer(Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(if (header.compact) 8.dp else 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    header.tabs.forEach { tab ->
-                        DetailTabButton(
-                            label = tab.label,
-                            selected = tab.selected,
-                            modifier = Modifier
-                                .then(if (focusedKey == tab.key) Modifier.focusRequester(restoredFocus) else Modifier)
-                                .onFocusChanged {
-                                    if (it.isFocused) {
-                                        onFocusKey(tab.key)
-                                        tab.onFocus()
-                                    }
-                                },
-                            onClick = tab.onSelect,
-                        )
-                    }
-                    val primaryShape = RoundedCornerShape(5.dp)
-                    Button(
-                        enabled = primaryActionEnabled,
-                        onClick = onPrimaryAction,
+            }
+            // 歌曲/文件夹标签与播放全部：右对齐、垂直居中，不再在标题下单独占一行。
+            Spacer(Modifier.width(14.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(if (header.compact) 8.dp else 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                header.tabs.forEach { tab ->
+                    DetailTabButton(
+                        label = tab.label,
+                        selected = tab.selected,
                         modifier = Modifier
-                            .then(if (focusedKey == "primary-action") Modifier.focusRequester(restoredFocus) else Modifier)
-                            .onFocusChanged { if (it.isFocused) onFocusKey("primary-action") }
-                            .height(40.dp),
-                        shape = ButtonDefaults.shape(
-                            primaryShape,
-                            primaryShape,
-                            primaryShape,
-                            primaryShape,
-                            primaryShape,
-                        ),
-                        scale = ButtonDefaults.scale(focusedScale = 1.04f),
-                        colors = ButtonDefaults.colors(
-                            containerColor = FnColors.Surface,
-                            contentColor = FnColors.Text,
-                            focusedContainerColor = FnColors.FocusFill,
-                            focusedContentColor = FnColors.Text,
-                            pressedContainerColor = FnColors.FocusFill,
-                            pressedContentColor = FnColors.Text,
-                        ),
-                        contentPadding = PaddingValues(horizontal = 17.dp, vertical = 0.dp),
-                    ) {
-                        Text("▶ $primaryActionLabel", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                    }
+                            .then(if (focusedKey == tab.key) Modifier.focusRequester(restoredFocus) else Modifier)
+                            .onFocusChanged {
+                                if (it.isFocused) {
+                                    onFocusKey(tab.key)
+                                    tab.onFocus()
+                                }
+                            },
+                        onClick = tab.onSelect,
+                    )
+                }
+                val primaryShape = RoundedCornerShape(5.dp)
+                Button(
+                    enabled = primaryActionEnabled,
+                    onClick = onPrimaryAction,
+                    modifier = Modifier
+                        .then(if (focusedKey == "primary-action") Modifier.focusRequester(restoredFocus) else Modifier)
+                        .onFocusChanged { if (it.isFocused) onFocusKey("primary-action") }
+                        .height(40.dp),
+                    shape = ButtonDefaults.shape(
+                        primaryShape,
+                        primaryShape,
+                        primaryShape,
+                        primaryShape,
+                        primaryShape,
+                    ),
+                    scale = ButtonDefaults.scale(focusedScale = 1.04f),
+                    colors = ButtonDefaults.colors(
+                        containerColor = FnColors.Surface,
+                        contentColor = FnColors.Text,
+                        focusedContainerColor = FnColors.FocusFill,
+                        focusedContentColor = FnColors.Text,
+                        pressedContainerColor = FnColors.FocusFill,
+                        pressedContentColor = FnColors.Text,
+                    ),
+                    contentPadding = PaddingValues(horizontal = 17.dp, vertical = 0.dp),
+                ) {
+                    Text("▶ $primaryActionLabel", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
         Spacer(Modifier.height(if (header.compact) 10.dp else 18.dp))
         Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.12f)))
         if (showTrackList) {
-            DetailTrackColumnHeader()
+            DetailTrackColumnHeader(showArtistColumn = header.showArtistColumn)
             Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.09f)))
             LazyColumn(Modifier.weight(1f), state = listState) {
                 if (error != null) {
@@ -3355,28 +3372,6 @@ private fun CollectionArtworkFallbackContent(
 }
 
 @Composable
-private fun DetailBackButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val shape = CircleShape
-    Button(
-        onClick = onClick,
-        modifier = modifier.size(46.dp).semantics { contentDescription = "返回" },
-        shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
-        scale = ButtonDefaults.scale(focusedScale = 1.08f),
-        colors = ButtonDefaults.colors(
-            containerColor = FnColors.Surface,
-            contentColor = FnColors.Text,
-            focusedContainerColor = FnColors.FocusFill,
-            focusedContentColor = FnColors.Text,
-            pressedContainerColor = FnColors.FocusFill,
-            pressedContentColor = FnColors.Text,
-        ),
-        contentPadding = PaddingValues(0.dp),
-    ) {
-        Text("‹", fontSize = 36.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
 private fun DetailTabButton(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val shape = RoundedCornerShape(5.dp)
     Button(
@@ -3399,14 +3394,16 @@ private fun DetailTabButton(label: String, selected: Boolean, modifier: Modifier
 }
 
 @Composable
-private fun DetailTrackColumnHeader() {
+private fun DetailTrackColumnHeader(showArtistColumn: Boolean) {
     Row(
         Modifier.fillMaxWidth().height(34.dp).padding(horizontal = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("#", color = FnColors.Muted, fontSize = 12.sp, modifier = Modifier.width(54.dp))
         Text("歌曲", color = FnColors.Muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
-        Text("歌手", color = FnColors.Muted, fontSize = 12.sp, modifier = Modifier.width(220.dp))
+        if (showArtistColumn) {
+            Text("歌手", color = FnColors.Muted, fontSize = 12.sp, modifier = Modifier.width(220.dp))
+        }
         Text("时长", color = FnColors.Muted, fontSize = 12.sp, textAlign = TextAlign.End, modifier = Modifier.width(70.dp))
     }
 }

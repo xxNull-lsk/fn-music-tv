@@ -328,35 +328,35 @@ class MusicRepository internal constructor(
     private var scanMemoAt: Long = 0L
 
     suspend fun scanAllTracks(pageSize: Int = LIBRARY_SCAN_PAGE_SIZE): List<Track> {
-        while (true) {
-            val memoHit = scanMutex.withLock {
-                scanMemoResult?.takeIf { memo ->
-                    memo.isNotEmpty() && now() - scanMemoAt < SCAN_MEMO_TTL_MS
-                }
+        scanMutex.withLock {
+            scanMemoResult?.takeIf { memo ->
+                memo.isNotEmpty() && now() - scanMemoAt < SCAN_MEMO_TTL_MS
             }
-            if (memoHit != null) return memoHit
+        }?.let { return it }
 
-            val deferred: Deferred<List<Track>> = scanMutex.withLock {
-                scanMemoResult?.takeIf { memo ->
-                    memo.isNotEmpty() && now() - scanMemoAt < SCAN_MEMO_TTL_MS
-                }?.let { return it }
-                    ?: scanScope.async { scanAllTracksLoop(pageSize) }.also { activeScan = it }
+        val deferred: Deferred<List<Track>> = scanMutex.withLock {
+            // 二次确认：并发调用在等待锁期间可能已完成扫描并写入备忘。
+            scanMemoResult?.takeIf { memo ->
+                memo.isNotEmpty() && now() - scanMemoAt < SCAN_MEMO_TTL_MS
+            }?.let { return it }
+            // 复用进行中的扫描：并发调用共享同一个 Deferred，避免重复整库扫描。
+                ?: activeScan?.takeIf { it.isActive }
+                ?: scanScope.async { scanAllTracksLoop(pageSize) }.also { activeScan = it }
+        }
+        try {
+            val result = deferred.await()
+            scanMutex.withLock {
+                // 空结果不备忘（可能是瞬时异常），下次调用重新扫描。
+                if (result.isNotEmpty()) {
+                    scanMemoResult = result
+                    scanMemoAt = now()
+                }
             }
-            try {
-                val result = deferred.await()
-                scanMutex.withLock {
-                    // 空结果不备忘（可能是瞬时异常），下次调用重新扫描。
-                    if (result.isNotEmpty()) {
-                        scanMemoResult = result
-                        scanMemoAt = now()
-                    }
-                }
-                return result
-            } finally {
-                scanMutex.withLock {
-                    // 扫描已结束（含失败）则清除；被取消的调用不打断后台仍在进行的扫描。
-                    if (activeScan === deferred && deferred.isCompleted) activeScan = null
-                }
+            return result
+        } finally {
+            scanMutex.withLock {
+                // 扫描已结束（含失败）则清除；被取消的调用不打断后台仍在进行的扫描。
+                if (activeScan === deferred && deferred.isCompleted) activeScan = null
             }
         }
     }

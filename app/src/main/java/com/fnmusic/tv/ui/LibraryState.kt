@@ -14,6 +14,7 @@ import com.fnmusic.tv.core.model.Page
 import com.fnmusic.tv.core.model.Playlist
 import com.fnmusic.tv.core.model.Track
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 internal sealed interface LibraryRoute {
@@ -244,10 +245,12 @@ internal class LibraryRetainedStateStore(val scope: CoroutineScope) {
     internal val size: Int
         get() = pagedStates.size + trackStates.size + listStates.size
 
+    /** 数据加载统一在 Default 调度器执行：仓库层解码/缓存写盘不切线程，
+     *  在主线程作用域执行会卡住触摸与焦点输入。 */
     fun <T> loadListOnce(state: RetainedListState<T>, loader: suspend () -> List<T>) {
         if (state.loading || !shouldLoadInitialList(state.snapshot)) return
         state.loading = true
-        scope.launch {
+        scope.launch(Dispatchers.Default) {
             runCatching { loader() }
                 .onSuccess { state.snapshot = retainLoadedList(state.snapshot, it) }
                 .onFailure {
@@ -267,7 +270,7 @@ internal class LibraryRetainedStateStore(val scope: CoroutineScope) {
     ) {
         if (state.loading || !shouldLoadInitialPage(state.snapshot)) return
         state.loading = true
-        scope.launch {
+        scope.launch(Dispatchers.Default) {
             runCatching { loader(1) }
                 .onSuccess { state.snapshot = retainLoadedPage(state.snapshot, it, key) }
                 .onFailure {
@@ -351,6 +354,11 @@ internal fun LibraryRoute.storageKey(): String = when (this) {
 }
 
 internal fun LibraryRoute.retainedStateKeys(): Set<String> = when (this) {
+    // 注：LibraryRoute.Folders 的“shared-libraries:folders”与共享整库扫描
+    // （FOLDER_SCAN_STATE_KEY）按会话保留、不再随路由移除清理：文件夹根页现在是
+    // “替换式”进入（单库时直接进入详情，Folders 路由随即离开栈），按路由清理会让
+    // 每次进入文件夹都重新整库扫描并显示长时间“正在加载子文件夹”。
+    // 新鲜度由扫描备忘（SCAN_MEMO_TTL_MS）与响应缓存控制。
     is LibraryRoute.PlaylistDetail -> setOf("playlist:${playlist.guid.value}:tracks")
     is LibraryRoute.ArtistDetail -> setOf(
         "artist:${artist.guid.value}:albums",
@@ -362,9 +370,6 @@ internal fun LibraryRoute.retainedStateKeys(): Set<String> = when (this) {
         "album-merged:${album.guid.value}:tracks",
     )
     is LibraryRoute.GenreDetail -> setOf("genre:${genre.guid.value}:tracks")
-    LibraryRoute.Folders -> setOf("shared-libraries:folders", FOLDER_SCAN_STATE_KEY)
-    // 共享的整库扫描由 LibraryRoute.Folders 弹出时统一清理；子文件夹返回上一级
-    // 不能清掉它，否则父目录会重新扫描并与孤儿扫描协程竞态、卡在加载中。
     is LibraryRoute.FolderDetail -> setOf("folder:${directory}:tracks")
     LibraryRoute.Favorites -> setOf("favorites:tracks")
     else -> emptySet()
